@@ -1,0 +1,568 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap");
+
+/* ── Design tokens (match main app) ───────────────────────────────────── */
+:root {
+  --text: #5f6571;
+  --text-h: #0f172a;
+  --text-m: #6b7280;
+  --bg: #f6f8fc;
+  --surface: #ffffff;
+  --border: #dbe4f0;
+  --border-strong: #c8d4e4;
+  --accent: #2563eb;
+  --accent-s: #1d4ed8;
+  --accent-bg: rgba(37, 99, 235, 0.08);
+  --shadow: 0 4px 24px rgba(15, 23, 42, 0.08), 0 1px 4px rgba(15, 23, 42, 0.05);
+  --sans: "Manrope", system-ui, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  /* node palette */
+  --c-individual: #2563eb;
+  --c-firm: #d97706;
+  --c-entity: #6b7280;
+  --c-controls: #ef4444;
+  --c-employed: #94a3b8;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.5 var(--sans);
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#finra-app {
+  display: flex;
+  flex-direction: column;
+  height: 100svh;
+  overflow: hidden;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+.fg-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  height: 52px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.fg-home-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-m);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+.fg-home-link:hover {
+  color: var(--accent);
+}
+
+.fg-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-h);
+  letter-spacing: -0.02em;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.fg-toolbar {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ── Inline Add Person ──────────────────────────────────────────────────── */
+.fg-add-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fg-add-input {
+  background: var(--surface, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  color: var(--text, #f1f5f9);
+  font: 13px var(--sans);
+  padding: 5px 10px;
+  width: 200px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.fg-add-input:focus {
+  border-color: var(--c-individual, #3b82f6);
+}
+
+.fg-add-input::placeholder {
+  color: var(--text-m, #64748b);
+}
+
+.fg-add-status {
+  font-size: 12px;
+  color: var(--text-m, #94a3b8);
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fg-meta {
+  font-size: 12px;
+  color: var(--text-m);
+  white-space: nowrap;
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.fg-btn {
+  font: 13px/1 var(--sans);
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-h);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+.fg-btn:hover {
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+
+.fg-btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-s);
+}
+.fg-btn-primary:hover {
+  background: var(--accent-s);
+}
+
+/* ── Body split ─────────────────────────────────────────────────────────── */
+.fg-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+.fg-sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.fg-sidebar-inner {
+  padding: 16px;
+}
+
+.fg-hint {
+  font-size: 13px;
+  color: var(--text-m);
+  text-align: center;
+  margin-top: 40px;
+}
+
+/* Sidebar content */
+.fg-sb-header {
+  padding: 12px 0 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+.fg-sb-header.individual .fg-sb-title {
+  color: var(--c-individual);
+}
+.fg-sb-header.firm .fg-sb-title {
+  color: var(--c-firm);
+}
+.fg-sb-header.entity .fg-sb-title {
+  color: var(--c-entity);
+}
+
+.fg-sb-title {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.02em;
+  color: var(--text-h);
+  margin-bottom: 6px;
+}
+
+.fg-sb-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.fg-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: #e2e8f0;
+  color: #475569;
+}
+.fg-badge.active {
+  background: #dcfce7;
+  color: #166534;
+}
+.fg-badge.inactive {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.fg-badge.stub {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.fg-sb-body {
+  font-size: 13px;
+}
+
+.fg-detail-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid #f1f5f9;
+  align-items: baseline;
+}
+.fg-detail-row:last-child {
+  border-bottom: none;
+}
+
+.fg-label {
+  font-weight: 600;
+  color: var(--text-m);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.fg-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-m);
+  margin: 14px 0 6px;
+}
+
+/* Timeline */
+.fg-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fg-tl-entry {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.fg-tl-firm {
+  display: block;
+  font-weight: 600;
+  color: var(--text-h);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.fg-tl-dates {
+  display: block;
+  font-size: 11px;
+  color: var(--text-m);
+  font-family: var(--mono);
+}
+
+.fg-tl-loc {
+  display: block;
+  font-size: 11px;
+  color: var(--text-m);
+}
+
+/* Disclosures */
+.fg-disclosure {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  padding: 7px 10px;
+  margin-bottom: 6px;
+}
+
+.fg-dis-type {
+  font-weight: 600;
+  font-size: 12px;
+  color: #9a3412;
+  display: block;
+}
+.fg-dis-date {
+  font-size: 11px;
+  color: var(--text-m);
+  display: block;
+}
+.fg-dis-res {
+  font-size: 11px;
+  font-style: italic;
+  display: block;
+}
+.fg-dis-detail {
+  font-size: 12px;
+  margin: 4px 0 0;
+  color: var(--text);
+}
+
+/* Owners */
+.fg-owner-row {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 6px 0;
+}
+.fg-owner-name {
+  display: block;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-h);
+}
+.fg-owner-pos {
+  display: block;
+  font-size: 11px;
+  color: var(--text-m);
+  line-height: 1.4;
+}
+.fg-owner-crd {
+  display: inline-block;
+  font-size: 11px;
+  font-family: var(--mono);
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-top: 2px;
+}
+
+/* ── Main graph area ───────────────────────────────────────────────────── */
+.fg-main {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+#fg-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* D3 node selected ring */
+.fg-node.selected circle,
+.fg-node.selected rect {
+  stroke-width: 3 !important;
+  filter: drop-shadow(0 0 6px rgba(37, 99, 235, 0.4));
+}
+
+/* ── Legend ─────────────────────────────────────────────────────────────── */
+.fg-legend {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+}
+
+.fg-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-h);
+}
+.fg-legend-item svg {
+  flex-shrink: 0;
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.fg-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--text-m);
+  font-size: 15px;
+}
+.fg-empty p {
+  margin: 0;
+}
+
+/* ── Log panel ──────────────────────────────────────────────────────────── */
+.fg-log-panel {
+  height: 200px;
+  flex-shrink: 0;
+  background: #0f172a;
+  border-top: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.fg-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 14px;
+  border-bottom: 1px solid #1e293b;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.fg-log-close {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.fg-log-close:hover {
+  color: #94a3b8;
+  background: #1e293b;
+}
+
+.fg-log-body {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  margin: 0;
+  padding: 10px 14px;
+  font: 12px/1.6 var(--mono);
+  color: #a3e635;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Utilities ──────────────────────────────────────────────────────────── */
+.hidden {
+  display: none !important;
+}
+
+/* ── Add Person Dialog ──────────────────────────────────────────────────── */
+.fg-dialog {
+  background: var(--bg-panel, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 10px;
+  padding: 24px 28px;
+  min-width: 320px;
+  max-width: 420px;
+  color: var(--text, #f1f5f9);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.fg-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.fg-dialog-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text, #f1f5f9);
+}
+
+.fg-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.fg-dialog-close {
+  background: none;
+  border: none;
+  color: var(--text-m, #94a3b8);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  line-height: 1;
+}
+
+.fg-dialog-close:hover {
+  color: var(--text, #f1f5f9);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.fg-dialog-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-m, #94a3b8);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fg-dialog-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg, #0f172a);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  color: var(--text, #f1f5f9);
+  font-size: 14px;
+  padding: 8px 10px;
+  outline: none;
+  margin-bottom: 16px;
+}
+
+.fg-dialog-input:focus {
+  border-color: var(--c-individual, #3b82f6);
+}
+
+.fg-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.fg-dialog-status {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  min-height: 18px;
+  color: var(--text-m, #94a3b8);
+}

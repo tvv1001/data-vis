@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FINRA Network Graph</title>
+    <!-- D3 v7 loaded as a global before the module so window.d3 is available -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  </head>
+  <body>
+    <div id="finra-app">
+      <header class="fg-header">
+        <h1 class="fg-title">FINRA Network</h1>
+        <div class="fg-toolbar">
+          <span id="fg-meta-label" class="fg-meta"></span>
+          <div class="fg-search">
+            <input
+              id="fg-search"
+              class="fg-search-input"
+              type="search"
+              placeholder="Search name, firm, CRD, SEC…"
+              autocomplete="off"
+            />
+          </div>
+          <div class="fg-add">
+            <input
+              id="fg-add-name"
+              class="fg-add-input"
+              type="text"
+              placeholder="Add missing person or firm…"
+            />
+            <button id="fg-add-btn" class="fg-add-btn">Add</button>
+            <span
+              id="fg-add-status"
+              class="fg-add-status"
+              aria-live="polite"
+            ></span>
+            <ul
+              id="fg-add-suggestions"
+              class="fg-add-suggestions hidden"
+              role="listbox"
+              aria-label="Suggestions"
+            ></ul>
+          </div>
+        </div>
+      </header>
+
+      <div class="fg-body">
+        <!-- Detail sidebar -->
+        <aside id="fg-sidebar" class="fg-sidebar">
+          <div id="fg-sidebar-inner" class="fg-sidebar-inner">
+            <p class="fg-hint">Click a node to inspect it.</p>
+          </div>
+        </aside>
+
+        <!-- Graph canvas -->
+        <main class="fg-main" id="fg-main">
+          <svg id="fg-svg"></svg>
+
+          <div id="fg-legend" class="fg-legend"></div>
+
+          <div id="fg-empty" class="fg-empty hidden">
+            <p>No graph built yet.</p>
+          </div>
+        </main>
+      </div>
+
+      <!-- Scraper log panel -->
+      <div id="fg-log-panel" class="fg-log-panel hidden">
+        <div class="fg-log-header">
+          <span>Scraper Output</span>
+          <button id="btn-log-close" class="fg-log-close">✕</button>
+        </div>
+        <pre id="fg-log-body" class="fg-log-body"></pre>
+      </div>
+    </div>
+    <script type="module" src="/src/finra.js"></script>
+  </body>
+</html>

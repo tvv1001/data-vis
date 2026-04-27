@@ -175,7 +175,12 @@ async function loadGraph() {
   try {
     let res;
     if (STATIC_MODE) {
-      res = await fetch(import.meta.env.BASE_URL + "finra-graph.json", { cache: "no-store" });
+      const primaryUrl = import.meta.env.BASE_URL + "finra-graph.json";
+      res = await fetch(primaryUrl, { cache: "no-store" });
+      if (!res.ok && res.status === 404) {
+        // Fallback for cases where BASE_URL and Pages path differ.
+        res = await fetch("./finra-graph.json", { cache: "no-store" });
+      }
     } else {
       // Append a timestamp to ensure we always get the latest graph on reload
       const url = new URL(`${BASE}/api/finra/graph`);

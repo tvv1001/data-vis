@@ -15,6 +15,7 @@
 
 import "./finra.css";
 
+const STATIC_MODE = import.meta.env.VITE_STATIC === "true";
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const d3 = window.d3;
 
@@ -76,6 +77,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function fetchSECSuggestions(q) {
+    if (STATIC_MODE) return; // SEC search requires backend
     clearSuggestions();
     if (!q) return;
     const params = {
@@ -171,10 +173,15 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Data loading ────────────────────────────────────────────────────────────
 async function loadGraph() {
   try {
-    // Append a timestamp to ensure we always get the latest graph on reload
-    const url = new URL(`${BASE}/api/finra/graph`);
-    url.searchParams.set("t", String(Date.now()));
-    const res = await fetch(url.toString(), { cache: "no-store" });
+    let res;
+    if (STATIC_MODE) {
+      res = await fetch(import.meta.env.BASE_URL + "finra-graph.json", { cache: "no-store" });
+    } else {
+      // Append a timestamp to ensure we always get the latest graph on reload
+      const url = new URL(`${BASE}/api/finra/graph`);
+      url.searchParams.set("t", String(Date.now()));
+      res = await fetch(url.toString(), { cache: "no-store" });
+    }
     if (!res.ok) {
       if (res.status === 404) {
         showEmpty(true);
@@ -484,6 +491,13 @@ async function addPersonToSeeds() {
   const status = document.getElementById("fg-add-status");
   const name = input.value.trim();
   if (!name) return;
+
+  if (STATIC_MODE) {
+    status.style.color = "#f59e0b";
+    status.textContent = "Adding seeds is not available in the static viewer.";
+    setTimeout(() => (status.textContent = ""), 4000);
+    return;
+  }
 
   status.textContent = "Saving…";
   status.style.color = "";

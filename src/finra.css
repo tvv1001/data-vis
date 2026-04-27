@@ -38,6 +38,55 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+.fg-runtime-banner {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 560px);
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.fg-runtime-banner.warn {
+  border-color: #f59e0b;
+  background: #fff7ed;
+}
+
+.fg-runtime-banner.ok {
+  border-color: #16a34a;
+  background: #f0fdf4;
+}
+
+.fg-runtime-banner-text {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-h);
+}
+
+.fg-runtime-banner-close {
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--text-h);
+  border-radius: 6px;
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.fg-runtime-banner-close:hover {
+  background: var(--bg);
+}
+
 /* ── Layout ────────────────────────────────────────────────────────────── */
 #finra-app {
   display: flex;

@@ -13,11 +13,68 @@
  *   controls    – red line   (person/entity → firm, from Form BD directOwners)
  */
 
-import "./finra.css";
-
-const STATIC_MODE = import.meta.env.VITE_STATIC === "true";
-const BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+const ENV = (typeof import.meta !== "undefined" && import.meta.env) || {};
+const STATIC_MODE = ENV.VITE_STATIC === "true";
+const BASE = ENV.VITE_API_URL || "http://localhost:3001";
+const BASE_URL = ENV.BASE_URL || "./";
+const CORS_PROXY_URL = (ENV.VITE_CORS_PROXY_URL || "").trim();
+const STATIC_GRAPH_URL = (ENV.VITE_GRAPH_URL || "").trim();
+const BROKERCHECK_SEARCH_API =
+  "https://api.brokercheck.finra.org/search/individual";
 const d3 = window.d3;
+const IS_SOURCE_MODULE = /\/src\/finra\.js(?:\?|$)/.test(import.meta.url);
+const IS_BUNDLED_MODULE = /\/assets\/.+\.js(?:\?|$)/.test(import.meta.url);
+
+function buildProxyUrl(targetUrl) {
+  if (!CORS_PROXY_URL) return targetUrl;
+  if (CORS_PROXY_URL.includes("{url}")) {
+    return CORS_PROXY_URL.replace("{url}", encodeURIComponent(targetUrl));
+  }
+  const join = CORS_PROXY_URL.includes("?") ? "&" : "?";
+  return `${CORS_PROXY_URL}${join}url=${encodeURIComponent(targetUrl)}`;
+}
+
+function emptyGraphPayload(sourceLabel = "(no static graph file)") {
+  return {
+    nodes: [],
+    links: [],
+    meta: {
+      sourceLabel,
+      generated: new Date().toISOString(),
+      totalIndividuals: 0,
+      totalFirms: 0,
+      totalLinks: 0,
+    },
+  };
+}
+
+function mountRuntimeBanner() {
+  let tone = "info";
+  let message = "";
+
+  if (IS_SOURCE_MODULE) {
+    tone = "warn";
+    message =
+      "Source mode detected: loading src/finra.js directly. GitHub Pages should serve bundled dist/assets output.";
+  } else if (IS_BUNDLED_MODULE) {
+    tone = "ok";
+    message = "Bundled mode detected: app is running from compiled assets.";
+  }
+
+  if (!message) return;
+
+  const banner = document.createElement("div");
+  banner.className = `fg-runtime-banner ${tone}`;
+  banner.setAttribute("role", "status");
+  banner.innerHTML = `
+    <span class="fg-runtime-banner-text">${message}</span>
+    <button type="button" class="fg-runtime-banner-close" aria-label="Dismiss runtime status">×</button>
+  `;
+
+  const closeBtn = banner.querySelector(".fg-runtime-banner-close");
+  closeBtn?.addEventListener("click", () => banner.remove());
+  document.body.appendChild(banner);
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
 let graphData = null; // { nodes, links, meta }
@@ -31,6 +88,8 @@ let spreadAnimId = null; // rAF handle for neighbor spread animation
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
+  mountRuntimeBanner();
+
   // Top toolbar buttons removed: refresh and run-scraper
   document.getElementById("btn-log-close").addEventListener("click", closeLog);
   // Note: inline "Add Person" UI removed from top — keep log close only
@@ -77,7 +136,6 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   async function fetchSECSuggestions(q) {
-    if (STATIC_MODE) return; // SEC search requires backend
     clearSuggestions();
     if (!q) return;
     const params = {
@@ -93,10 +151,25 @@ document.addEventListener("DOMContentLoaded", () => {
       wt: "json",
     };
     try {
-      const url = `${BASE}/api/finra/sec-search`;
-      const res = await fetch(
-        url + `?${new URLSearchParams(params).toString()}`,
-      );
+      let res;
+      if (STATIC_MODE) {
+        if (!CORS_PROXY_URL) {
+          if (addStatus) {
+            addStatus.style.color = "#ef4444";
+            addStatus.textContent =
+              "Live suggestions need VITE_CORS_PROXY_URL in static mode.";
+            setTimeout(() => (addStatus.textContent = ""), 3500);
+          }
+          return;
+        }
+        const target =
+          BROKERCHECK_SEARCH_API +
+          `?${new URLSearchParams(params).toString()}`;
+        res = await fetch(buildProxyUrl(target));
+      } else {
+        const url = `${BASE}/api/finra/sec-search`;
+        res = await fetch(url + `?${new URLSearchParams(params).toString()}`);
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       // Try common locations for result docs
@@ -173,19 +246,28 @@ document.addEventListener("DOMContentLoaded", () => {
 // ── Data loading ────────────────────────────────────────────────────────────
 async function loadGraph() {
   try {
-    let res;
+    let res = null;
     if (STATIC_MODE) {
-      const primaryUrl = import.meta.env.BASE_URL + "finra-graph.json";
-      res = await fetch(primaryUrl, { cache: "no-store" });
-      if (!res.ok && res.status === 404) {
-        // Fallback for cases where BASE_URL and Pages path differ.
-        res = await fetch("./finra-graph.json", { cache: "no-store" });
+      const candidates = [
+        STATIC_GRAPH_URL || `${BASE_URL}finra-graph.json`,
+        "./finra-graph.json",
+      ];
+      for (const candidate of candidates) {
+        // In static hosting, prefer CDN/browser cache for shared graph snapshots.
+        res = await fetch(candidate, { cache: "default" });
+        if (res.ok) break;
       }
     } else {
       // Append a timestamp to ensure we always get the latest graph on reload
       const url = new URL(`${BASE}/api/finra/graph`);
       url.searchParams.set("t", String(Date.now()));
       res = await fetch(url.toString(), { cache: "no-store" });
+    }
+    if (STATIC_MODE && (!res || !res.ok)) {
+      graphData = emptyGraphPayload("(static graph missing)");
+      updateMeta(graphData.meta);
+      showEmpty(true);
+      return;
     }
     if (!res.ok) {
       if (res.status === 404) {

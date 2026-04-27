@@ -36,6 +36,8 @@ jobs:
         env:
           VITE_STATIC: "true"
           VITE_BASE_URL: "/data-vis/"
+          VITE_CORS_PROXY_URL: ${{ vars.VITE_CORS_PROXY_URL }}
+          VITE_GRAPH_URL: ${{ vars.VITE_GRAPH_URL }}
         run: pnpm build
 
       - uses: actions/upload-pages-artifact@v3

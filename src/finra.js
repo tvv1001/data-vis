@@ -1,32 +1,51 @@
 /**
  * finra.js  –  FINRA BrokerCheck Network Graph
  *
- * Renders the finra-graph.json as an interactive D3 v7 force-directed graph.
+ * Renders the finra-graph.json as an interactive Sigma.js (WebGL) graph
+ * backed by Graphology, replacing the previous D3 SVG renderer.
  *
  * Nodes:
  *   individual  – blue circles  (people discovered from seed search)
- *   firm        – amber squares (registered broker-dealer / IA firms)
- *   entity      – grey diamonds (non-individual Form BD control owners)
+ *   firm        – amber circles (registered broker-dealer / IA firms)
+ *   entity      – grey circles  (non-individual Form BD control owners)
  *
- * Links:
- *   employed_by – grey line  (person → firm, with date range on hover)
- *   controls    – red line   (person/entity → firm, from Form BD directOwners)
+ * Edges:
+ *   employed_by – grey arrow  (person → firm, with date range in sidebar)
+ *   controls    – red arrow   (person/entity → firm, from Form BD directOwners)
  */
 
 import "./finra.css";
+import Graph from "graphology";
+import Sigma from "sigma";
+import { NodeCircleProgram, EdgeArrowProgram } from "sigma/rendering";
+import { circular } from "graphology-layout";
+import FA2Layout from "graphology-layout-forceatlas2/worker";
+import forceAtlas2 from "graphology-layout-forceatlas2";
 
 const BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
-const d3 = window.d3;
 
 // ── State ──────────────────────────────────────────────────────────────────
-let graphData = null; // { nodes, links, meta }
-let simulation = null;
+let graphData = null; // { nodes, links, meta } – raw API response
+let graph = null; // graphology Graph instance
+let sigmaInstance = null;
+let fa2Layout = null;
 let selectedId = null;
-let linkSel = null; // current <line> selection
-let nodeSel = null; // current <g.fg-node> selection
-let layoutNodes = null; // node objects with x/y positions
-let layoutLinks = null; // link objects (source/target resolved to objects)
-let spreadAnimId = null; // rAF handle for neighbor spread animation
+
+// Visual state – read by sigma reducers every render frame
+const filterState = {
+  active: false,
+  matched: new Set(), // node keys that directly match the search query
+  expanded: new Set(), // matched + their direct neighbours (fully visible)
+};
+const highlightState = {
+  active: false,
+  selectedNode: null, // graphology node key of selected node
+  neighbors: new Set(), // direct neighbours of selectedNode
+};
+
+// Drag state
+let isDragging = false;
+let draggedNode = null;
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
@@ -206,16 +225,14 @@ function debounce(fn, ms) {
 function filterGraph(rawQuery) {
   const q = String(rawQuery || "").trim();
   const qlow = q.toLowerCase();
-  if (!nodeSel || !linkSel || !layoutNodes || !layoutLinks) return;
+  if (!graph || !sigmaInstance) return;
 
   if (!q) {
-    // reset
-    nodeSel.style("opacity", null).classed("filtered", false);
-    linkSel
-      .style("stroke-opacity", (d) =>
-        d.relationship === "controls" ? 0.6 : 0.6,
-      )
-      .style("opacity", null);
+    // Reset filter state – reducers will clear on next refresh
+    filterState.active = false;
+    filterState.matched = new Set();
+    filterState.expanded = new Set();
+    sigmaInstance.refresh();
     return;
   }
 
@@ -238,34 +255,42 @@ function filterGraph(rawQuery) {
     /^crd:/i.test(q) ||
     /^sec:/i.test(q);
 
-  // determine matching node ids
+  // Determine matching node keys
   const matched = new Set();
-  layoutNodes.forEach((n) => {
+  graph.forEachNode((nodeKey, attrs) => {
     // gather candidate values
     const label = String(
-      firstField(n, ["label", "firm_name", "firmName"]) || "",
+      firstField(attrs, ["label", "firm_name", "firmName"]) || "",
     );
     const labelLow = label.toLowerCase();
 
     const crd = String(
-      firstField(n, ["crd", "ind_source_id", "ind_crd"]) || "",
+      firstField(attrs, ["crd", "ind_source_id", "ind_crd"]) || "",
     );
     const bdSec = String(
-      firstField(n, ["bdSecNumber", "bd_sec_number", "firm_bd_sec_number"]) ||
-        "",
+      firstField(attrs, [
+        "bdSecNumber",
+        "bd_sec_number",
+        "firm_bd_sec_number",
+      ]) || "",
     );
-    const bdFull = String(firstField(n, ["firm_bd_full_sec_number"]) || "");
-    const firmSrc = String(firstField(n, ["firm_source_id", "firm_id"]) || "");
+    const bdFull = String(firstField(attrs, ["firm_bd_full_sec_number"]) || "");
+    const firmSrc = String(
+      firstField(attrs, ["firm_source_id", "firm_id"]) || "",
+    );
 
     // person name pieces
-    const fname = String(firstField(n, ["ind_firstname"]) || "");
-    const mname = String(firstField(n, ["ind_middlename"]) || "");
-    const lname = String(firstField(n, ["ind_lastname"]) || "");
+    const fname = String(firstField(attrs, ["ind_firstname"]) || "");
+    const mname = String(firstField(attrs, ["ind_middlename"]) || "");
+    const lname = String(firstField(attrs, ["ind_lastname"]) || "");
     const personFull = [fname, mname, lname].filter(Boolean).join(" ");
 
     // firm address (may be stored as JSON string)
     let addrObj = null;
-    const addrRaw = firstField(n, ["firm_address_details", "address_details"]);
+    const addrRaw = firstField(attrs, [
+      "firm_address_details",
+      "address_details",
+    ]);
     if (addrRaw) {
       try {
         addrObj = typeof addrRaw === "string" ? JSON.parse(addrRaw) : addrRaw;
@@ -277,44 +302,40 @@ function filterGraph(rawQuery) {
     // exact numeric match for CRD/SEC/firmsource
     if (isExactNumeric) {
       const qDigits = normalizeDigits(q);
-      // check CRD / source ids
       if (
         normalizeDigits(crd) === qDigits ||
         normalizeDigits(firmSrc) === qDigits
       ) {
-        matched.add(n.id);
+        matched.add(nodeKey);
         return;
       }
-      // check bd sec numbers: either numeric or full with hyphen
       if (bdFull && bdFull.toLowerCase() === q.toLowerCase()) {
-        matched.add(n.id);
+        matched.add(nodeKey);
         return;
       }
       if (normalizeDigits(bdSec) === qDigits) {
-        matched.add(n.id);
+        matched.add(nodeKey);
         return;
       }
-      // also check node._source fields if present
-      const src = n._source || {};
+      const src = attrs._source || {};
       if (src.ind_source_id && normalizeDigits(src.ind_source_id) === qDigits) {
-        matched.add(n.id);
+        matched.add(nodeKey);
         return;
       }
       if (
         src.firm_bd_full_sec_number &&
         String(src.firm_bd_full_sec_number).toLowerCase() === q.toLowerCase()
       ) {
-        matched.add(n.id);
+        matched.add(nodeKey);
         return;
       }
-      // no exact match
       return;
     }
 
-    // Non-exact: loose matching for main name/firm only (exclude alternate names)
+    // Non-exact: loose matching for main name/firm only
     const ql = qlow;
     if (labelLow.includes(ql) || personFull.toLowerCase().includes(ql)) {
-      matched.add(n.id);
+      matched.add(nodeKey);
       return;
     }
 
@@ -335,55 +356,39 @@ function filterGraph(rawQuery) {
         .join(" ")
         .toLowerCase();
       if (addrText.includes(ql)) {
-        matched.add(n.id);
+        matched.add(nodeKey);
         return;
       }
     }
 
     // employment branch match for individuals
-    const emp = firstField(n, ["ind_current_employments", "ind_employments"]);
+    const emp = firstField(attrs, [
+      "ind_current_employments",
+      "ind_employments",
+    ]);
     if (Array.isArray(emp)) {
       for (const e of emp) {
         const city = String(e.branch_city || e.city || "").toLowerCase();
         const state = String(e.branch_state || e.state || "").toLowerCase();
         const zip = String(e.branch_zip || e.postalCode || "").toLowerCase();
         if (city.includes(ql) || state.includes(ql) || zip.includes(ql)) {
-          matched.add(n.id);
+          matched.add(nodeKey);
           return;
         }
       }
     }
   });
 
-  // include direct neighbors of matched nodes for context
+  // Include direct neighbours of matched nodes for context
   const expanded = new Set(matched);
-  matched.forEach((id) => {
-    const nb = getNeighborIds(id);
-    nb.forEach((x) => expanded.add(x));
+  matched.forEach((key) => {
+    graph.neighbors(key).forEach((nb) => expanded.add(nb));
   });
 
-  // update node opacity
-  nodeSel.style("opacity", (d) => (expanded.has(d.id) ? 1 : 0.08));
-
-  // update links: highlight links connected to any matched node, dim others
-  linkSel
-    .style("stroke-opacity", (l) => {
-      const srcId = l.source?.id ?? l.source;
-      const tgtId = l.target?.id ?? l.target;
-      if (matched.has(srcId) || matched.has(tgtId)) return 1;
-      if (expanded.has(srcId) || expanded.has(tgtId)) return 0.45;
-      return 0.05;
-    })
-    .style("opacity", (l) => {
-      const srcId = l.source?.id ?? l.source;
-      const tgtId = l.target?.id ?? l.target;
-      return matched.has(srcId) ||
-        matched.has(tgtId) ||
-        expanded.has(srcId) ||
-        expanded.has(tgtId)
-        ? 1
-        : 0.15;
-    });
+  filterState.active = true;
+  filterState.matched = matched;
+  filterState.expanded = expanded;
+  sigmaInstance.refresh();
 }
 
 function updateMeta(meta = {}) {
@@ -403,9 +408,8 @@ function updateMeta(meta = {}) {
 
 function showEmpty(show) {
   document.getElementById("fg-empty")?.classList.toggle("hidden", !show);
-  document.getElementById("fg-svg").style.visibility = show
-    ? "hidden"
-    : "visible";
+  const container = document.getElementById("fg-container");
+  if (container) container.style.visibility = show ? "hidden" : "visible";
   document.getElementById("fg-legend").style.display = show ? "none" : "flex";
 }
 
@@ -547,347 +551,317 @@ async function addPersonToSeeds() {
   }
 }
 
-// ── D3 Rendering ────────────────────────────────────────────────────────────
-const NODE_R = { individual: 10, firm: 12, entity: 9 };
+// ── Sigma/Graphology Rendering ───────────────────────────────────────────────
+
+// Base node colours (resolved CSS values, not var() references – sigma WebGL
+// cannot resolve CSS custom properties)
 const NODE_COLOR = {
-  individual: "var(--c-individual)",
-  firm: "var(--c-firm)",
-  entity: "var(--c-entity)",
+  individual: "#2563eb",
+  firm: "#d97706",
+  entity: "#6b7280",
 };
-const LINK_COLOR = {
-  employed_by: "var(--c-employed)",
-  controls: "var(--c-controls)",
+const EDGE_COLOR = {
+  employed_by: "#94a3b8",
+  controls: "#ef4444",
 };
 
 function renderGraph(data) {
-  if (simulation) simulation.stop();
-  if (spreadAnimId) {
-    cancelAnimationFrame(spreadAnimId);
-    spreadAnimId = null;
+  // ── Teardown ──────────────────────────────────────────────────────────────
+  if (fa2Layout) {
+    fa2Layout.kill();
+    fa2Layout = null;
   }
-  const svg = d3.select("#fg-svg");
-  svg.selectAll("*").remove();
+  if (sigmaInstance) {
+    sigmaInstance.kill();
+    sigmaInstance = null;
+  }
 
-  const main = document.getElementById("fg-main");
-  const W = main.clientWidth;
-  const H = main.clientHeight;
+  // Reset visual state
+  filterState.active = false;
+  filterState.matched = new Set();
+  filterState.expanded = new Set();
+  highlightState.active = false;
+  highlightState.selectedNode = null;
+  highlightState.neighbors = new Set();
+  selectedId = null;
 
-  svg.attr("viewBox", `0 0 ${W} ${H}`);
+  // ── Build Graphology graph ────────────────────────────────────────────────
+  graph = new Graph({ multi: true, allowSelfLoops: false });
 
-  // Deep-copy so D3 mutation doesn't corrupt the original
-  const nodes = data.nodes.map((n) => ({ ...n }));
-  const links = data.links.map((l) => ({ ...l }));
-  layoutNodes = nodes;
-  layoutLinks = links;
-
-  // ── Per-node degree stats for scaled / tinted firm nodes ─────────────────
-  const _degMap = new Map();
-  nodes.forEach((n) =>
-    _degMap.set(n.id, { total: 0, controls: 0, employed: 0 }),
+  // Per-node degree stats for size scaling
+  const degMap = new Map();
+  data.nodes.forEach((n) =>
+    degMap.set(n.id, { total: 0, controls: 0, employed: 0 }),
   );
-  links.forEach((l) => {
+  data.links.forEach((l) => {
     const srcId = l.source?.id ?? l.source;
     const tgtId = l.target?.id ?? l.target;
-    [[srcId], [tgtId]].forEach(([id]) => {
-      const e = _degMap.get(id);
-      if (!e) return;
+    for (const id of [srcId, tgtId]) {
+      const e = degMap.get(id);
+      if (!e) continue;
       e.total++;
       if (l.relationship === "controls") e.controls++;
       else e.employed++;
-    });
+    }
   });
-  const _maxFirmDeg = Math.max(
+
+  const maxFirmDeg = Math.max(
     1,
-    ...nodes
+    ...data.nodes
       .filter((n) => n.group === "firm")
-      .map((n) => _degMap.get(n.id)?.total || 0),
+      .map((n) => degMap.get(n.id)?.total || 0),
   );
-  const _maxIndDeg = Math.max(
+  const maxIndDeg = Math.max(
     1,
-    ...nodes
+    ...data.nodes
       .filter((n) => n.group === "individual")
-      .map((n) => _degMap.get(n.id)?.total || 0),
+      .map((n) => degMap.get(n.id)?.total || 0),
   );
-  nodes.forEach((n) => {
-    n._deg = _degMap.get(n.id) || { total: 0, controls: 0, employed: 0 };
+
+  // Add nodes
+  data.nodes.forEach((n) => {
+    if (graph.hasNode(n.id)) return; // skip duplicates
+    const deg = degMap.get(n.id) || { total: 0, controls: 0, employed: 0 };
+
+    let size;
     if (n.group === "firm") {
-      // scale: 1× at degree 0 → 2.5× at max degree (sqrt for perceptual linearity)
-      const scale =
-        1 + (Math.sqrt(n._deg.total) / Math.sqrt(_maxFirmDeg)) * 1.5;
-      n._vizHalf = (NODE_R.firm * 1.7 * scale) / 2;
-    }
-    // Make individual seeds larger when they have more connections
-    if (n.group === "individual") {
-      const scale = 1 + (Math.sqrt(n._deg.total) / Math.sqrt(_maxIndDeg)) * 2.5;
-      n._vizHalf = (NODE_R.individual * 1.7 * scale) / 2;
-    }
-  });
-
-  // ── Zoom ──────────────────────────────────────────────────────────────────
-  const zoom = d3
-    .zoom()
-    .scaleExtent([0.1, 6])
-    .on("zoom", (event) => root.attr("transform", event.transform));
-
-  svg.call(zoom);
-
-  const root = svg.append("g").attr("class", "fg-root");
-
-  // ── Arrow markers ─────────────────────────────────────────────────────────
-  const defs = svg.append("defs");
-
-  ["employed_by", "controls"].forEach((rel) => {
-    defs
-      .append("marker")
-      .attr("id", `arrow-${rel}`)
-      .attr("viewBox", "0 -4 8 8")
-      .attr("refX", 22)
-      .attr("refY", 0)
-      .attr("markerWidth", 6)
-      .attr("markerHeight", 6)
-      .attr("orient", "auto")
-      .append("path")
-      .attr("d", "M0,-4L8,0L0,4")
-      .attr("fill", rel === "controls" ? "#ef4444" : "#94a3b8");
-  });
-
-  // ── Force simulation ──────────────────────────────────────────────────────
-  simulation = d3
-    .forceSimulation(nodes)
-    .alphaDecay(0.05)
-    .force(
-      "link",
-      d3
-        .forceLink(links)
-        .id((d) => d.id)
-        .distance(180),
-    )
-    .force("charge", d3.forceManyBody().strength(-700))
-    .force("center", d3.forceCenter(W / 2, H / 2))
-    // per-node radius so scaled firm squares don't overlap each other
-    .force(
-      "collision",
-      d3
-        .forceCollide()
-        .radius((d) =>
-          d._vizHalf != null ? d._vizHalf + 28 : (NODE_R[d.group] || 10) + 28,
-        )
-        .strength(0.9),
-    );
-
-  // ── Links ─────────────────────────────────────────────────────────────────
-  const link = root
-    .append("g")
-    .attr("class", "fg-links")
-    .selectAll("line")
-    .data(links)
-    .join("line")
-    .attr("stroke", (d) => LINK_COLOR[d.relationship] || "#94a3b8")
-    .attr("stroke-opacity", 0.6)
-    .attr("stroke-width", (d) => (d.relationship === "controls" ? 1.5 : 1))
-    .attr("marker-end", (d) => `url(#arrow-${d.relationship})`);
-  linkSel = link;
-
-  // ── Nodes ─────────────────────────────────────────────────────────────────
-  const node = root
-    .append("g")
-    .attr("class", "fg-nodes")
-    .selectAll("g")
-    .data(nodes)
-    .join("g")
-    .attr("class", "fg-node")
-    .call(fluidDrag())
-    .on("click", (event, d) => {
-      event.stopPropagation();
-      selectNode(d);
-    });
-  nodeSel = node;
-
-  // Shapes
-  node.each(function (d) {
-    const g = d3.select(this);
-    const r = NODE_R[d.group] || 10;
-    const color = NODE_COLOR[d.group] || "#94a3b8";
-
-    if (d.group === "firm") {
-      const s = (d._vizHalf ?? r * 0.85) * 2;
-      // Dominant-link stroke: red = controls, slate = employed_by, white = neutral
-      const deg = d._deg || { total: 0, controls: 0, employed: 0 };
-      const dominantStroke =
-        deg.controls > deg.employed
-          ? "#ef4444"
-          : deg.employed > deg.controls
-            ? "#64748b"
-            : "#fff";
-      const strokeW = deg.total > 0 ? 2.5 : 1.5;
-      // Outer dashed ring shows the minority link type when both are present
-      if (deg.controls > 0 && deg.employed > 0) {
-        const minorityStroke =
-          deg.controls > deg.employed ? "#64748b" : "#ef4444";
-        g.append("rect")
-          .attr("x", -s / 2 - 4)
-          .attr("y", -s / 2 - 4)
-          .attr("width", s + 8)
-          .attr("height", s + 8)
-          .attr("rx", 6)
-          .attr("fill", "none")
-          .attr("stroke", minorityStroke)
-          .attr("stroke-width", 1.5)
-          .attr("stroke-dasharray", "4 3")
-          .attr("opacity", 0.5);
-      }
-      g.append("rect")
-        .attr("x", -s / 2)
-        .attr("y", -s / 2)
-        .attr("width", s)
-        .attr("height", s)
-        .attr("rx", 3)
-        .attr("fill", color)
-        .attr("stroke", dominantStroke)
-        .attr("stroke-width", strokeW)
-        .attr("opacity", d.stub ? 0.45 : 0.9);
-    } else if (d.group === "entity") {
-      const s = r * 1.5;
-      g.append("polygon")
-        .attr("points", `0,${-s} ${s},0 0,${s} ${-s},0`)
-        .attr("fill", color)
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 1.5)
-        .attr("opacity", 0.8);
+      size = 6 * (1 + (Math.sqrt(deg.total) / Math.sqrt(maxFirmDeg)) * 1.5);
+    } else if (n.group === "individual") {
+      size = 4 * (1 + (Math.sqrt(deg.total) / Math.sqrt(maxIndDeg)) * 2.0);
     } else {
-      const rv = d._vizHalf != null ? d._vizHalf : r;
-      g.append("circle")
-        .attr("r", rv)
-        .attr("fill", color)
-        .attr("stroke", "#fff")
-        .attr("stroke-width", 1.5)
-        .attr("opacity", d.stub ? 0.5 : 1);
+      size = 4; // entity
     }
+    size = Math.max(2, Math.min(size, 22));
 
-    // Disclosure indicator ring
-    if (d.group === "individual" && d.disclosureCount > 0) {
-      const _r = d._vizHalf != null ? d._vizHalf : r;
-      g.append("circle")
-        .attr("r", _r + 4)
-        .attr("fill", "none")
-        .attr("stroke", "#f97316")
-        .attr("stroke-width", 2)
-        .attr("stroke-dasharray", "3 2")
-        .attr("opacity", 0.75);
-    }
-  });
+    const color = NODE_COLOR[n.group] || "#6b7280";
 
-  // Labels — rendered in two passes (stroke halo first, then fill) so text
-  // stays readable even when nodes are still close after zooming out.
-  // Both elements live inside the <g> so they move with every transform.
-  ["halo", "fill"].forEach((pass) => {
-    node
-      .append("text")
-      .attr("class", `fg-label-${pass}`)
-      .attr("dy", (d) =>
-        d._vizHalf != null ? d._vizHalf + 14 : (NODE_R[d.group] || 10) + 14,
-      )
-      .attr("text-anchor", "middle")
-      .attr("font-size", "10px")
-      .attr("font-family", "var(--sans)")
-      .attr("font-weight", "500")
-      .attr("fill", pass === "halo" ? "none" : "#1e293b")
-      .attr("stroke", pass === "halo" ? "rgba(246,248,252,0.92)" : "none")
-      .attr("stroke-width", pass === "halo" ? 4 : 0)
-      .attr("stroke-linejoin", "round")
-      .attr("paint-order", "stroke")
-      .attr("pointer-events", "none")
-      .text((d) => truncate(capitalize(d.label), 22));
-  });
-  // Tooltip
-  node.append("title").text((d) => {
-    const parts = [d.label, d.group.toUpperCase()];
-    if (d.crd) parts.push(`CRD: ${d.crd}`);
-    return parts.join("\n");
-  });
-
-  // ── Tick ──────────────────────────────────────────────────────────────────
-  simulation.on("tick", () => {
-    link
-      .attr("x1", (d) => d.source.x)
-      .attr("y1", (d) => d.source.y)
-      .attr("x2", (d) => d.target.x)
-      .attr("y2", (d) => d.target.y);
-
-    node.attr("transform", (d) => `translate(${d.x},${d.y})`);
-  });
-
-  // Freeze all nodes once the initial layout converges — no more jiggling
-  simulation.on("end", () => {
-    nodes.forEach((d) => {
-      d.fx = d.x;
-      d.fy = d.y;
+    // Spread all original node data into attributes so sidebar + filter
+    // functions can access every field (crd, ind_firstname, etc.)
+    graph.addNode(n.id, {
+      ...n,
+      // Override sigma visual attrs after the spread
+      label: capitalize(n.label),
+      x: Math.random() * 1000 - 500,
+      y: Math.random() * 1000 - 500,
+      size,
+      color,
+      _baseSize: size,
+      _baseColor: color,
+      _deg: deg,
     });
   });
 
-  // Deselect on blank click
-  svg.on("click", () => {
-    selectedId = null;
-    node.classed("selected", false);
-    highlightLinks(null);
-    showSidebarHint();
-  });
-}
-
-// ── Fluid Drag (simulation-driven neighbor repulsion) ────────────────────
-function fluidDrag() {
-  return d3
-    .drag()
-    .on("start", function (event, d) {
-      // Cancel any pending click-spread animation
-      if (spreadAnimId) {
-        cancelAnimationFrame(spreadAnimId);
-        spreadAnimId = null;
-      }
-      // Pin the dragged node
-      d.fx = d.x;
-      d.fy = d.y;
-      // Unfix direct neighbors so the simulation can push them aside
-      const neighborIds = getNeighborIds(d.id);
-      layoutNodes.forEach((n) => {
-        if (neighborIds.has(n.id)) {
-          n.fx = null;
-          n.fy = null;
-        }
-      });
-      // Reheat just enough for fluid neighbor movement
-      simulation.alphaTarget(0.3).restart();
-    })
-    .on("drag", function (event, d) {
-      d.fx = event.x;
-      d.fy = event.y;
-    })
-    .on("end", function (event, d) {
-      // Cool down – simulation will coast to rest then the "end" handler re-freezes all
-      simulation.alphaTarget(0);
-    });
-}
-
-// Returns the set of node ids directly connected to the given node id
-function getNeighborIds(nodeId) {
-  const ids = new Set();
-  if (!layoutLinks) return ids;
-  layoutLinks.forEach((l) => {
+  // Add edges (graphology multi-graph allows parallel edges)
+  data.links.forEach((l) => {
     const srcId = l.source?.id ?? l.source;
     const tgtId = l.target?.id ?? l.target;
-    if (srcId === nodeId) ids.add(tgtId);
-    if (tgtId === nodeId) ids.add(srcId);
+    if (!graph.hasNode(srcId) || !graph.hasNode(tgtId)) return;
+    const color = EDGE_COLOR[l.relationship] || "#94a3b8";
+    try {
+      graph.addEdge(srcId, tgtId, {
+        ...l,
+        color,
+        size: l.relationship === "controls" ? 1.5 : 1,
+        _baseColor: color,
+        _baseSize: l.relationship === "controls" ? 1.5 : 1,
+      });
+    } catch (_) {
+      /* skip edges that fail (e.g. self-loop on no-selfloop graph) */
+    }
   });
-  return ids;
+
+  // Initial layout: place nodes in a circle so FA2 has a clean starting point
+  circular.assign(graph);
+
+  // ── Sigma renderer ────────────────────────────────────────────────────────
+  const container = document.getElementById("fg-container");
+
+  sigmaInstance = new Sigma(graph, container, {
+    nodeProgramClasses: { circle: NodeCircleProgram },
+    edgeProgramClasses: { arrow: EdgeArrowProgram },
+    defaultNodeType: "circle",
+    defaultEdgeType: "arrow",
+    renderEdgeLabels: false,
+    labelFont: "Manrope, system-ui, sans-serif",
+    labelSize: 10,
+    labelWeight: "500",
+    labelColor: { color: "#1e293b" },
+    labelRenderedSizeThreshold: 6, // only show labels when node is ≥6px on screen
+
+    // ── Node reducer: called every frame to compute display attributes ──────
+    nodeReducer(nodeKey, data) {
+      const res = { ...data };
+
+      // Selection highlight: dim everything except the selected node and its
+      // immediate neighbours.
+      if (highlightState.active) {
+        if (
+          nodeKey !== highlightState.selectedNode &&
+          !highlightState.neighbors.has(nodeKey)
+        ) {
+          res.color = "#d1d5db";
+          res.size = Math.max(1, data._baseSize * 0.5);
+          res.label = "";
+        } else if (nodeKey === highlightState.selectedNode) {
+          res.size = data._baseSize * 1.3;
+        }
+      }
+
+      // Search filter: dim nodes outside the matched+expanded set.
+      if (filterState.active) {
+        if (!filterState.expanded.has(nodeKey)) {
+          res.color = "#e5e7eb";
+          res.size = Math.max(1, data._baseSize * 0.3);
+          res.label = "";
+        }
+      }
+
+      // Disclosure indicator: tint orange border by making the node slightly
+      // lighter so the orange label colour stands out (full ring needs a
+      // compound program; this is a lightweight fallback).
+      if (data.disclosureCount > 0 && res.color === data._baseColor) {
+        res.color = data.group === "individual" ? "#3b82f6" : res.color;
+      }
+
+      return res;
+    },
+
+    // ── Edge reducer ─────────────────────────────────────────────────────────
+    edgeReducer(edgeKey, data) {
+      const res = { ...data };
+      const src = graph.source(edgeKey);
+      const tgt = graph.target(edgeKey);
+
+      // Selection highlight
+      if (highlightState.active) {
+        if (
+          src === highlightState.selectedNode ||
+          tgt === highlightState.selectedNode
+        ) {
+          res.color = data.relationship === "controls" ? "#ff2222" : "#38bdf8";
+          res.size = data.relationship === "controls" ? 2.5 : 2;
+        } else {
+          res.color = "#e5e7eb";
+          res.size = 0.5;
+        }
+      }
+
+      // Search filter
+      if (filterState.active) {
+        const srcExpanded = filterState.expanded.has(src);
+        const tgtExpanded = filterState.expanded.has(tgt);
+        if (!srcExpanded && !tgtExpanded) {
+          res.hidden = true;
+        } else if (
+          !filterState.matched.has(src) &&
+          !filterState.matched.has(tgt)
+        ) {
+          res.color = "#d1d5db";
+          res.size = 0.5;
+        }
+      }
+
+      return res;
+    },
+  });
+
+  // ── Events ────────────────────────────────────────────────────────────────
+  sigmaInstance.on("clickNode", ({ node }) => {
+    if (isDragging) return;
+    const attrs = graph.getNodeAttributes(node);
+    selectedId = attrs.id ?? node;
+    highlightState.active = true;
+    highlightState.selectedNode = node;
+    highlightState.neighbors = new Set(graph.neighbors(node));
+    renderSidebar(attrs);
+    sigmaInstance.refresh();
+    spreadNeighbors(node);
+  });
+
+  sigmaInstance.on("clickStage", () => {
+    if (isDragging) return;
+    selectedId = null;
+    highlightState.active = false;
+    highlightState.selectedNode = null;
+    highlightState.neighbors = new Set();
+    showSidebarHint();
+    sigmaInstance.refresh();
+  });
+
+  // ── Drag ──────────────────────────────────────────────────────────────────
+  setupSigmaDrag(sigmaInstance);
+
+  // ── ForceAtlas2 layout ────────────────────────────────────────────────────
+  const nodeCount = graph.order;
+  const fa2Settings = forceAtlas2.inferSettings(graph);
+
+  if (nodeCount > 1500) {
+    // Worker-based async layout for large graphs – keeps the UI responsive
+    fa2Layout = new FA2Layout(graph, {
+      settings: { ...fa2Settings, barnesHutOptimize: true },
+    });
+    fa2Layout.start();
+    // Stop after 5 s; user can still drag nodes freely after that
+    setTimeout(() => fa2Layout?.stop(), 5000);
+  } else {
+    // Synchronous for small/demo graphs
+    forceAtlas2.assign(graph, { iterations: 150, settings: fa2Settings });
+  }
 }
 
-// ── Selection & Sidebar ─────────────────────────────────────────────────────
+// ── Sigma drag ───────────────────────────────────────────────────────────────
+function setupSigmaDrag(renderer) {
+  isDragging = false;
+  draggedNode = null;
+
+  renderer.on("downNode", ({ node }) => {
+    // Stop the layout so manual drag positions aren't immediately overridden
+    if (fa2Layout) fa2Layout.stop();
+    isDragging = true;
+    draggedNode = node;
+  });
+
+  renderer.getMouseCaptor().on("mousemovebody", (e) => {
+    if (!isDragging || !draggedNode) return;
+    const pos = renderer.viewportToGraph(e);
+    graph.setNodeAttribute(draggedNode, "x", pos.x);
+    graph.setNodeAttribute(draggedNode, "y", pos.y);
+    e.preventSigmaDefault();
+    e.original.preventDefault();
+    e.original.stopPropagation();
+  });
+
+  renderer.getMouseCaptor().on("mouseup", () => {
+    // Small delay so clickStage doesn't fire right after drag ends
+    setTimeout(() => {
+      isDragging = false;
+      draggedNode = null;
+    }, 50);
+  });
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// Returns a Set of neighbour node keys for the given node key.
+function getNeighborIds(nodeKey) {
+  if (!graph || !graph.hasNode(nodeKey)) return new Set();
+  return new Set(graph.neighbors(nodeKey));
+}
+
+// ── Selection & Sidebar ───────────────────────────────────────────────────────
 function selectNode(d) {
-  selectedId = d.id;
-  nodeSel.classed("selected", (n) => n.id === d.id);
-  highlightLinks(d.id);
-  renderSidebar(d);
-  spreadNeighbors(d);
+  // Called externally (e.g. from addPersonToSeeds reload path).
+  // The main selection path is the clickNode event in renderGraph.
+  if (!sigmaInstance || !graph) return;
+  const nodeKey = d.id ?? d;
+  if (!graph.hasNode(nodeKey)) return;
+  const attrs = graph.getNodeAttributes(nodeKey);
+  selectedId = attrs.id ?? nodeKey;
+  highlightState.active = true;
+  highlightState.selectedNode = nodeKey;
+  highlightState.neighbors = new Set(graph.neighbors(nodeKey));
+  renderSidebar(attrs);
+  sigmaInstance.refresh();
 }
 
 function showSidebarHint() {
@@ -895,76 +869,49 @@ function showSidebarHint() {
     `<p class="fg-hint">Click a node to inspect it.</p>`;
 }
 
-// ── Link highlight on selection ───────────────────────────────────────────────
-// activeId = null  → reset all lines to their default appearance
-// activeId = id    → brighten connected lines by type; dim unconnected ones
+// ── Edge highlight (thin wrapper kept for API compat) ────────────────────────
 function highlightLinks(activeId) {
-  if (!linkSel) return;
+  if (!sigmaInstance) return;
   if (activeId == null) {
-    linkSel
-      .attr("stroke", (d) => LINK_COLOR[d.relationship] || "#94a3b8")
-      .attr("stroke-opacity", 0.6)
-      .attr("stroke-width", (d) => (d.relationship === "controls" ? 1.5 : 1));
-    return;
+    highlightState.active = false;
+    highlightState.selectedNode = null;
+    highlightState.neighbors = new Set();
+  } else {
+    highlightState.active = true;
+    highlightState.selectedNode = activeId;
+    highlightState.neighbors = new Set(
+      graph?.hasNode(activeId) ? graph.neighbors(activeId) : [],
+    );
   }
-  linkSel.each(function (d) {
-    const srcId = d.source?.id ?? d.source;
-    const tgtId = d.target?.id ?? d.target;
-    const connected = srcId === activeId || tgtId === activeId;
-    const sel = d3.select(this);
-    if (connected) {
-      // controls → vivid red; employed_by → vivid cyan-blue
-      sel
-        .attr("stroke", d.relationship === "controls" ? "#ff2222" : "#38bdf8")
-        .attr("stroke-opacity", 1)
-        .attr("stroke-width", d.relationship === "controls" ? 2.5 : 2);
-    } else {
-      sel
-        .attr("stroke", LINK_COLOR[d.relationship] || "#94a3b8")
-        .attr("stroke-opacity", 0.15)
-        .attr("stroke-width", 1);
-    }
-  });
+  sigmaInstance.refresh();
 }
 
-// ── Spread neighbors on click ────────────────────────────────────────────────
-function spreadNeighbors(clickedNode) {
-  if (!layoutNodes || !layoutLinks || !nodeSel || !linkSel) return;
-  if (spreadAnimId) {
-    cancelAnimationFrame(spreadAnimId);
-    spreadAnimId = null;
-  }
+// ── Spread neighbours on node click ──────────────────────────────────────────
+function spreadNeighbors(clickedNodeKey) {
+  if (!graph || !sigmaInstance) return;
 
-  const SPREAD = 80;
-  const DURATION = 480;
+  const clickedAttrs = graph.getNodeAttributes(clickedNodeKey);
+  const cx = clickedAttrs.x;
+  const cy = clickedAttrs.y;
 
-  // Find all direct neighbor IDs
-  const neighborIds = new Set();
-  layoutLinks.forEach((l) => {
-    const srcId = l.source?.id ?? l.source;
-    const tgtId = l.target?.id ?? l.target;
-    if (srcId === clickedNode.id) neighborIds.add(tgtId);
-    if (tgtId === clickedNode.id) neighborIds.add(srcId);
-  });
+  const SPREAD = 80; // graph-coordinate units
+  const DURATION = 480; // ms
 
-  if (neighborIds.size === 0) return;
+  const neighborKeys = graph.neighbors(clickedNodeKey);
+  if (neighborKeys.length === 0) return;
 
-  // Fast node lookup
-  const nodeById = new Map(layoutNodes.map((d) => [d.id, d]));
-
-  // Capture start and target positions for each neighbor
+  // Snapshot each neighbour's starting position and compute target
   const snapshots = new Map();
-  neighborIds.forEach((id) => {
-    const d = nodeById.get(id);
-    if (!d) return;
-    const dx = d.x - clickedNode.x;
-    const dy = d.y - clickedNode.y;
+  neighborKeys.forEach((key) => {
+    const a = graph.getNodeAttributes(key);
+    const dx = a.x - cx;
+    const dy = a.y - cy;
     const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-    snapshots.set(id, {
-      x0: d.x,
-      y0: d.y,
-      x1: d.x + (dx / dist) * SPREAD,
-      y1: d.y + (dy / dist) * SPREAD,
+    snapshots.set(key, {
+      x0: a.x,
+      y0: a.y,
+      x1: a.x + (dx / dist) * SPREAD,
+      y1: a.y + (dy / dist) * SPREAD,
     });
   });
 
@@ -972,56 +919,15 @@ function spreadNeighbors(clickedNode) {
 
   function frame(now) {
     const raw = Math.min((now - startTime) / DURATION, 1);
-    const ease = d3.easeCubicOut(raw);
-
-    // Interpolate positions directly in the data objects
-    // (link .source.x / .target.y then read naturally)
-    snapshots.forEach((snap, id) => {
-      const d = nodeById.get(id);
-      if (!d) return;
-      d.x = snap.x0 + (snap.x1 - snap.x0) * ease;
-      d.y = snap.y0 + (snap.y1 - snap.y0) * ease;
+    const ease = 1 - Math.pow(1 - raw, 3); // cubic ease-out
+    snapshots.forEach((snap, key) => {
+      graph.setNodeAttribute(key, "x", snap.x0 + (snap.x1 - snap.x0) * ease);
+      graph.setNodeAttribute(key, "y", snap.y0 + (snap.y1 - snap.y0) * ease);
     });
-
-    // Re-render affected nodes
-    nodeSel
-      .filter((d) => neighborIds.has(d.id))
-      .attr("transform", (d) => `translate(${d.x},${d.y})`);
-
-    // Re-render all links touching the clicked node or any neighbor
-    linkSel
-      .filter((l) => {
-        const srcId = l.source?.id ?? l.source;
-        const tgtId = l.target?.id ?? l.target;
-        return (
-          srcId === clickedNode.id ||
-          tgtId === clickedNode.id ||
-          neighborIds.has(srcId) ||
-          neighborIds.has(tgtId)
-        );
-      })
-      .attr("x1", (l) => l.source.x)
-      .attr("y1", (l) => l.source.y)
-      .attr("x2", (l) => l.target.x)
-      .attr("y2", (l) => l.target.y);
-
-    if (raw < 1) {
-      spreadAnimId = requestAnimationFrame(frame);
-    } else {
-      spreadAnimId = null;
-      // Freeze at final positions
-      snapshots.forEach((snap, id) => {
-        const d = nodeById.get(id);
-        if (!d) return;
-        d.x = snap.x1;
-        d.y = snap.y1;
-        d.fx = d.x;
-        d.fy = d.y;
-      });
-    }
+    if (raw < 1) requestAnimationFrame(frame);
   }
 
-  spreadAnimId = requestAnimationFrame(frame);
+  requestAnimationFrame(frame);
 }
 
 function renderSidebar(d) {
@@ -1277,12 +1183,9 @@ function renderLegend() {
 
 // ── Resize ────────────────────────────────────────────────────────────────────
 function onResize() {
-  if (!graphData) return;
-  // Just update the viewBox — no re-simulation, positions stay frozen
-  const main = document.getElementById("fg-main");
-  const W = main.clientWidth;
-  const H = main.clientHeight;
-  d3.select("#fg-svg").attr("viewBox", `0 0 ${W} ${H}`);
+  // Sigma listens to ResizeObserver internally; a manual refresh ensures
+  // the camera recalculates after any layout shifts.
+  if (sigmaInstance) sigmaInstance.refresh();
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

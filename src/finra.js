@@ -489,9 +489,13 @@ async function addPersonToSeeds() {
   status.style.color = "";
 
   try {
-    const existing = await fetch(`${BASE}/api/finra/seeds`).then((r) =>
-      r.json(),
-    );
+    // Fetch current seeds and fail early if the GET fails
+    const getRes = await fetch(`${BASE}/api/finra/seeds`);
+    if (!getRes.ok) {
+      const txt = await getRes.text().catch(() => "");
+      throw new Error(`GET /api/finra/seeds failed ${getRes.status}: ${txt}`);
+    }
+    const existing = await getRes.json();
     const seeds = Array.isArray(existing) ? existing : [];
     if (seeds.includes(name)) {
       status.textContent = `Already in seeds.`;
@@ -501,10 +505,27 @@ async function addPersonToSeeds() {
     const updated = [...seeds, name];
     const res = await fetch(`${BASE}/api/finra/seeds`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
       body: JSON.stringify({ seeds: updated }),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    // Read response text so we can display helpful diagnostics for browser errors
+    const resText = await res.text().catch(() => "");
+    let resBody = null;
+    try {
+      resBody = JSON.parse(resText);
+    } catch (e) {
+      resBody = null;
+    }
+    if (!res.ok) {
+      console.error("PUT /api/finra/seeds failed:", res.status, resText);
+      const msg =
+        resBody?.error || resBody?.message || resText || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
     input.value = "";
     status.style.color = "var(--c-individual, #3b82f6)";
     status.textContent = `Added "${name}"`;
@@ -519,8 +540,10 @@ async function addPersonToSeeds() {
       status.textContent = "";
     }, 4000);
   } catch (err) {
+    console.error("addPersonToSeeds error:", err);
     status.style.color = "#ef4444";
-    status.textContent = `Error: ${err.message}`;
+    // show a compact but descriptive message in the UI
+    status.textContent = `Error: ${err.message || "unknown"}`;
   }
 }
 

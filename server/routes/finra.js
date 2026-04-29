@@ -74,6 +74,84 @@ finraRouter.get("/graph", async (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/finra/graph-stream
+// Streams graph as NDJSON, sorted hubs-first so the client can render a
+// structural skeleton before all data arrives.
+// Line format:  {"type":"meta"|"nodes"|"links"|"done", "data":…}
+// ---------------------------------------------------------------------------
+finraRouter.get("/graph-stream", async (req, res) => {
+  try {
+    await access(GRAPH_FILE, constants.R_OK);
+  } catch {
+    return res.status(404).end();
+  }
+
+  res.setHeader("Content-Type", "application/x-ndjson");
+  res.setHeader("Cache-Control", "no-cache");
+  res.flushHeaders();
+
+  let graph;
+  try {
+    graph = JSON.parse(await readFile(GRAPH_FILE, "utf-8"));
+  } catch (err) {
+    logger.error("finra /graph-stream read error", { error: err.message });
+    res.write(
+      JSON.stringify({ type: "error", message: "Failed to read graph" }) + "\n",
+    );
+    return res.end();
+  }
+
+  // Compute degree for each node so we can stream hubs first
+  const deg = new Map((graph.nodes || []).map((n) => [n.id, 0]));
+  (graph.links || []).forEach((l) => {
+    const s = l.source?.id ?? l.source;
+    const t = l.target?.id ?? l.target;
+    if (deg.has(s)) deg.set(s, deg.get(s) + 1);
+    if (deg.has(t)) deg.set(t, deg.get(t) + 1);
+  });
+
+  const sortedNodes = [...(graph.nodes || [])].sort(
+    (a, b) => (deg.get(b.id) || 0) - (deg.get(a.id) || 0),
+  );
+
+  // 1. Meta chunk (includes total so client can show progress)
+  res.write(
+    JSON.stringify({
+      type: "meta",
+      data: graph.meta,
+      total: sortedNodes.length,
+    }) + "\n",
+  );
+
+  // 2. Node chunks (hubs first, batch to avoid tiny writes)
+  const NODE_BATCH = 300;
+  for (let i = 0; i < sortedNodes.length; i += NODE_BATCH) {
+    res.write(
+      JSON.stringify({
+        type: "nodes",
+        data: sortedNodes.slice(i, i + NODE_BATCH),
+      }) + "\n",
+    );
+    await new Promise((r) => setImmediate(r)); // yield to event loop
+  }
+
+  // 3. Link chunks
+  const LINK_BATCH = 500;
+  for (let i = 0; i < (graph.links || []).length; i += LINK_BATCH) {
+    res.write(
+      JSON.stringify({
+        type: "links",
+        data: graph.links.slice(i, i + LINK_BATCH),
+      }) + "\n",
+    );
+    await new Promise((r) => setImmediate(r));
+  }
+
+  res.write(JSON.stringify({ type: "done" }) + "\n");
+  res.end();
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/finra/seeds
 // ---------------------------------------------------------------------------
 finraRouter.get("/seeds", async (_req, res) => {

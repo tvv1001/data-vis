@@ -457,7 +457,7 @@ function runScraper() {
                     }
                   }
                 }
-              } catch {
+              } catch (e) {
                 /* malformed chunk */
               }
             });

@@ -817,12 +817,15 @@ function setupSigmaDrag(renderer) {
   renderer.on("downNode", ({ node }) => {
     // Stop the layout so manual drag positions aren't immediately overridden
     if (fa2Layout) fa2Layout.stop();
-    isDragging = true;
+    // Don't set isDragging yet — wait for actual mouse movement so that a
+    // plain click still reaches the clickNode handler.
     draggedNode = node;
   });
 
   renderer.getMouseCaptor().on("mousemovebody", (e) => {
-    if (!isDragging || !draggedNode) return;
+    if (!draggedNode) return;
+    // Only now do we know the user is genuinely dragging (not just clicking)
+    isDragging = true;
     const pos = renderer.viewportToGraph(e);
     graph.setNodeAttribute(draggedNode, "x", pos.x);
     graph.setNodeAttribute(draggedNode, "y", pos.y);
@@ -832,11 +835,13 @@ function setupSigmaDrag(renderer) {
   });
 
   renderer.getMouseCaptor().on("mouseup", () => {
-    // Small delay so clickStage doesn't fire right after drag ends
+    draggedNode = null;
+    // Reset isDragging on next tick so clickNode (which fires before mouseup
+    // resolves) isn't affected when it was a pure click (isDragging=false),
+    // but IS blocked when it follows a real drag.
     setTimeout(() => {
       isDragging = false;
-      draggedNode = null;
-    }, 50);
+    }, 0);
   });
 }
 
